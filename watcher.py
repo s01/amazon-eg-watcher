@@ -8,57 +8,22 @@ import secrets
 import sqlite3
 import time
 from decimal import Decimal, InvalidOperation
-from html.parser import HTMLParser
 from pathlib import Path
 from urllib.error import HTTPError, URLError
-from urllib.parse import urljoin, urlsplit
+from urllib.parse import urlsplit
 from urllib.request import Request, urlopen
 
 ROOT = Path(__file__).resolve().parent
-SOURCE = "https://souqnile.com/deals.php?min_discount=70&lang=en"
+SOURCES = (
+    "https://www.amazon.eg/-/en/deals",
+    "https://www.amazon.eg/whitefriday?language=en",
+)
 INTERVAL = 900
 BUTTON = "🔎 افحص العروض دلوقتي"
 
 
 class ServiceError(Exception):
     pass
-
-
-class Cards(HTMLParser):
-    def __init__(self):
-        super().__init__()
-        self.cards = []
-        self.card = None
-        self.field = None
-        self.next_url = None
-
-    def handle_starttag(self, tag, attrs):
-        attrs = dict(attrs)
-        classes = attrs.get("class", "").split()
-        if "data-next-url" in attrs:
-            self.next_url = attrs["data-next-url"]
-        if tag == "article" and "sn-card" in classes:
-            self.card = {**attrs, "name": "", "reference": "", "source": ""}
-        if self.card is None:
-            return
-        for class_name, field in (("sn-card__name", "name"),
-                                  ("sn-card__price-original", "reference"),
-                                  ("sn-card__source", "source")):
-            if class_name in classes:
-                self.field = field
-                if field == "name":
-                    self.card["href"] = attrs.get("href", "")
-
-    def handle_data(self, data):
-        if self.card is not None and self.field:
-            self.card[self.field] += data
-
-    def handle_endtag(self, tag):
-        if tag in {"a", "span"}:
-            self.field = None
-        if tag == "article" and self.card is not None:
-            self.cards.append(self.card)
-            self.card = None
 
 
 def request(url, payload=None):
@@ -75,49 +40,54 @@ def request(url, payload=None):
         raise ServiceError(f"Connection failed to {urlsplit(url).hostname}") from None
 
 
-def parse_offer(card):
-    product_id = card.get("data-product-id", "")
-    if not re.fullmatch(r"[A-Z0-9]{26}", product_id):
+def parse_offer(product):
+    asin = product.get("asin", "")
+    name = product.get("title", "")
+    if not re.fullmatch(r"[A-Z0-9]{10}", asin) or not name.strip():
         return None
-    if card["source"].strip() != "Checkout on Amazon Egypt":
+    if (product.get("dealDetails") or {}).get("state") != "AVAILABLE":
         return None
-    reference = re.fullmatch(r"\s*([\d,.]+)\s*ج\.م\s*", card["reference"])
-    if not reference or not card["name"].strip():
-        return None
+    pricing = product.get("price") or {}
     try:
-        price = Decimal(card.get("data-price", ""))
-        old = Decimal(reference[1].replace(",", ""))
-        if not price.is_finite() or not 0 < price < old:
+        price = Decimal((pricing.get("priceToPay") or {}).get("price", ""))
+        reference = Decimal((pricing.get("basisPrice") or {}).get("price", ""))
+        if not price.is_finite() or not reference.is_finite() or not 0 < price < reference:
             return None
-        if (old - price) * 100 <= old * 70:
+        if (reference - price) * 100 <= reference * 70:
             return None
-    except InvalidOperation:
+    except (InvalidOperation, TypeError):
         return None
-    return product_id, price, old, " ".join(card["name"].split())[:320]
+    return asin, price, reference, " ".join(name.split())[:320]
+
+
+def amazon_products(page):
+    products = {}
+    decoder = json.JSONDecoder()
+    for match in re.finditer(r'"productSearchResponse"\s*:\s*', page):
+        try:
+            response, _ = decoder.raw_decode(page, match.end())
+        except ValueError:
+            continue
+        if isinstance(response, dict):
+            for product in response.get("products") or []:
+                if isinstance(product, dict) and product.get("asin"):
+                    products[product["asin"]] = product
+    if not products:
+        raise ServiceError("Amazon Egypt page returned no readable deal cards")
+    return products.values()
 
 
 def scan():
-    url = SOURCE
-    offers = {}
-    visited = set()
-    while url:
-        if url in visited or len(visited) == 10:
-            raise ServiceError("Unexpected deals pagination")
-        visited.add(url)
-        page = Cards()
-        page.feed(request(url))
-        if page.next_url is None:
-            raise ServiceError("Deals page format changed")
-        for card in page.cards:
-            offer = parse_offer(card)
-            if offer is not None:
-                offers[offer[0]] = offer
-        url = urljoin(SOURCE, page.next_url) if page.next_url else ""
-        if url and urlsplit(url).netloc != "souqnile.com":
-            raise ServiceError("Unexpected deals page host")
-        if url:
-            time.sleep(1)
-    return sorted(offers.values(), key=lambda offer: offer[1] / offer[2])
+    for url in SOURCES:
+        try:
+            products = amazon_products(request(url))
+        except ServiceError as error:
+            print(str(error), flush=True)
+            continue
+        print(f"Amazon Egypt: read {len(products)} deal cards", flush=True)
+        offers = filter(None, map(parse_offer, products))
+        return sorted(offers, key=lambda offer: offer[1] / offer[2])
+    raise ServiceError("Could not read Amazon Egypt deals from either public page")
 
 
 def telegram(token, method, **payload):
@@ -173,8 +143,8 @@ def deliver(config, database):
         if previous and price >= Decimal(previous[0]):
             continue
         percentage = (reference - price) * 100 / reference
-        link = f"https://souqnile.com/out.php?id={product_id}&placement=product-card&lang=en"
-        send(config, f"🔥 خصم {percentage:.2f}% حسب سوق نايل\n{name}\n"
+        link = f"https://www.amazon.eg/dp/{product_id}"
+        send(config, f"🔥 خصم {percentage:.2f}% على أمازون مصر\n{name}\n"
              f"السعر {price:,.2f} جنيه | المرجعي {reference:,.2f} جنيه\n"
              f"{link}\nراجع السعر والتوافر على أمازون.")
         database.execute("INSERT OR REPLACE INTO sent VALUES (?, ?)", (product_id, str(price)))

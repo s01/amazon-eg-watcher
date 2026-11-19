@@ -1,7 +1,7 @@
 # Amazon Egypt Telegram watcher
 
-GitHub Actions checks the public SouqNile Amazon Egypt deals page every five minutes. GitHub can delay runner starts. Use the bot's scan button or /scan for a summary on the next poll. The source determines coverage, and the current price and shipping availability should be checked on Amazon.
+GitHub Actions checks Amazon Egypt's public Deals page every five minutes. The current White Friday landing page is a direct Amazon fallback. Coverage is limited to product cards included in the page response and may change as Amazon updates the site. A missing or unreadable page fails the run. GitHub can delay runner starts.
 
-The watcher computes discounts strictly above 70% from the displayed EGP reference and sale prices. It sends an alert for a new deal or a lower price than its last alert. The monitor-state branch holds product IDs, the last alerted prices and the Telegram polling offset. GitHub Actions Secrets hold the Telegram token and private chat ID.
+The watcher computes discounts strictly above 70% from the EGP prices Amazon displays. It sends a direct Amazon product link for a new qualifying ASIN or a lower price than its last alert. Check purchase eligibility and shipping on Amazon. The monitor-state branch holds the alert history and polling offset. GitHub Actions Secrets hold the Telegram token and private chat ID.
 
-Run a source-only check with `python3 watcher.py check`. Use the workflow's Run workflow button to trigger an immediate cloud check.
+Run a source-only check with `python3 watcher.py check`. Use the workflow's Run workflow button to trigger an immediate cloud check. The Telegram scan button requests a summary on the next poll.
