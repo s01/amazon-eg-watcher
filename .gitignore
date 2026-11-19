@@ -1,0 +1,5 @@
+config.json
+state.sqlite3*
+watcher.lock
+watcher.log
+__pycache__/
